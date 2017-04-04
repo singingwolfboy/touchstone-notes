@@ -335,11 +335,6 @@ the following sections to your ``/etc/nginx/conf.d/django.conf`` file,
         fastcgi_pass unix:/run/shibboleth/shibresponder.sock;
     }
 
-    # Resources for the Shibboleth error pages. This can be customised.
-    location /shibboleth-sp {
-        alias /usr/share/shibboleth/;
-    }
-
     # A secured location.  Here all incoming requests query the
     # FastCGI authorizer.  Watch out for performance issues and spoofing.
     location /secure {

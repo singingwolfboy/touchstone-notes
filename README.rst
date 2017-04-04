@@ -214,7 +214,7 @@ Shibboleth needs HTTPS to work, and the best way to get that is with
 You should now have a certificate in the
 ``/etc/letsencrypt/live/django-shibboleth-demo.odl.mit.edu/`` directory.
 Next, we need to tell nginx about it. Add another server block to the
-`/etc/nginx/conf.d/django.conf` file that looks like this:
+``/etc/nginx/conf.d/django.conf`` file that looks like this:
 
 .. code-block:: nginx
 

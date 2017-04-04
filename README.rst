@@ -45,10 +45,36 @@ Note that this will install nginx at version 1.11.12. If a more recent version
 of nginx is available, you should modify the ``git clone`` line to grab that
 release.
 
-This should install nginx, but it doesn't install the files necessary to
-integrate it with systemd_. It would be nice to let systemd handle launching
-and running nginx, so on a coworker's suggestion, I've copied over the file
-that APT's packaged nginx uses to integrate it with systemd. Create a new file
+Nginx is now installed, but we're not done. When you install nginx via APT, it
+also takes care of some additional housekeeping to make it play nicely with
+the rest of the computer. Since we're installing it from source, we need to
+do that housekeeping ourselves.
+
+First, create a new user for nginx to run under, and make a few new directories:
+
+.. code-block:: bash
+
+    sudo useradd --home-dir /etc/nginx nginx
+    sudo mkdir /var/log/nginx
+    sudo mkdir /etc/nginx/conf.d
+
+Next, edit nginx's config file at ``/etc/nginx/nginx.conf``. Set these lines
+at the top of the file:
+
+.. code-block:: nginx
+
+    user       nginx;
+    error_log  /var/log/nginx/error.log;
+    pid        /run/nginx.pid;
+
+In the same config file, there is an ``http`` section. At the bottom of that
+file, just before the closing brace of this section, add the line
+``include conf.d/*.conf;``.
+
+It would also be nice to integrate nginx with systemd_, so that nginx would
+be automatically launched when the computer boots up. At a coworker's
+suggestion, I've copied over the file that APT's packaged nginx uses
+to integrate it with systemd. Create a new file
 at ``/etc/systemd/system/multi-user.target.wants/nginx.service`` with this
 content:
 
@@ -384,7 +410,7 @@ library:
 
     pip install git+https://github.com/Brown-University-Library/django-shibboleth-remoteuser.git
 
-Next, open the `settings.py` file, and add the following variables to it:
+Next, open the ``settings.py`` file, and add the following variables to it:
 
 .. code-block:: python
 
@@ -398,17 +424,17 @@ Next, open the `settings.py` file, and add the following variables to it:
         'shibboleth.backends.ShibbolethRemoteUserBackend',
     ]
 
-Also, add the ``ShibbolethRemoteUserMiddleware`` to the ``MIDDLEWARE_CLASSES`` list,
+Also, add the ``ShibbolethRemoteUserMiddleware`` to the ``MIDDLEWARE`` list,
 *after* the Django's ``AuthenticationMiddleware``:
 
 .. code-block:: python
 
-    MIDDLEWARE_CLASSES = (
+    MIDDLEWARE = [
         ...
         'django.contrib.auth.middleware.AuthenticationMiddleware',
         'shibboleth.middleware.ShibbolethRemoteUserMiddleware',
         ...
-    )
+    ]
 
 You might want to use the following template for testing purposes:
 
@@ -424,7 +450,7 @@ You might want to use the following template for testing purposes:
 
 In order to see your changes, you'll need to restart uWSGI:
 
-.. code-block: bash
+.. code-block:: bash
 
     # activate your virtualenv, then
     uwsgi --reload=uwsgi.pid

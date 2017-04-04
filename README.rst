@@ -3,7 +3,7 @@ Touchstone Integration with Django
 
 These notes are from trying to set up a Django_ application to work with MIT's
 Touchstone_ system, which is an implementation of Shibboleth_. This is a long,
-involved process, and I haven't yet gotten it to be fully functional!
+involved process, so strap in and get ready to learn a lot of devops!
 This assumes that you are running on a vanilla Debian server -- my test box
 has a DNS entry of ``django-shibboleth-demo.odl.mit.edu``.
 

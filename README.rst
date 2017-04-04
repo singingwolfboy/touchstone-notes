@@ -10,11 +10,12 @@ has a DNS entry of ``django-shibboleth-demo.odl.mit.edu``.
 Here are the steps at a high level:
 
 1. Compile & install nginx with Shibboleth integration
-2. Create Django project with django-shibboleth-remoteuser
+2. Create a vanilla Django project
 3. Run Django project with nginx through uWSGI
 4. Set up HTTPS with Let's Encrypt
 5. Install Shibboleth SP and run as daemon through Supervisor
-6. Configure Shibboleth-authenticated routes in nginx
+6. Configure routes in Shibboleth
+7. Customize Django project to pick up Shibboleth headers
 
 NGINX
 -----
@@ -39,6 +40,10 @@ so we'll have to compile nginx from source and add these modules into the mix.
     make
     sudo make install
     sudo cp ../nginx-http-shibboleth/includes/* /etc/nginx/
+
+Note that this will install nginx at version 1.11.12. If a more recent version
+of nginx is available, you should modify the ``git clone`` line to grab that
+release.
 
 This should install nginx, but it doesn't install the files necessary to
 integrate it with systemd_. It would be nice to let systemd handle launching
@@ -113,7 +118,8 @@ Activate the virtualenv, then:
     pip install uwsgi
     uwsgi --module=testproject.wsgi:application --env DJANGO_SETTINGS_MODULE=testproject.settings --socket=127.0.0.1:29000 --daemonize=uwsgi.log --pidfile=uwsgi.pid
 
-To test that it's working, you can do this:
+Port 29000 is arbitrary; use whatever port you want. To test that it's working,
+you can do this:
 
 .. code-block:: bash
 
@@ -139,10 +145,6 @@ and create this file at ``/etc/nginx/conf.d/django.conf``:
         location / {
             uwsgi_pass django;
             include /etc/nginx/uwsgi_params;
-            uwsgi_param Host $host;
-            uwsgi_param X-Real-IP $remote_addr;
-            uwsgi_param X-Forwarded-For $proxy_add_x_forwarded_for;
-            uwsgi_param X-Forwarded-Proto $http_x_forwarded_proto;
         }
 
         location /static/  {
@@ -153,6 +155,16 @@ and create this file at ``/etc/nginx/conf.d/django.conf``:
             alias /var/www/shibdemo/.well-known/;
         }
     }
+
+Also edit the file ``/etc/nginx/uwsgi_params`` and add the following lines to
+it:
+
+.. code-block:: nginx
+
+    uwsgi_param Host $host;
+    uwsgi_param X-Real-IP $remote_addr;
+    uwsgi_param X-Forwarded-For $proxy_add_x_forwarded_for;
+    uwsgi_param X-Forwarded-Proto $http_x_forwarded_proto;
 
 Make sure that ``/var/www/shibdemo`` exists, and then tell nginx to reload
 its configuration. You can run this command to test that everything is working:
@@ -190,10 +202,6 @@ Next, we need to tell nginx about it. Add another server block to the
         location / {
             uwsgi_pass django;
             include /etc/nginx/uwsgi_params;
-            uwsgi_param Host $host;
-            uwsgi_param X-Real-IP $remote_addr;
-            uwsgi_param X-Forwarded-For $proxy_add_x_forwarded_for;
-            uwsgi_param X-Forwarded-Proto $http_x_forwarded_proto;
         }
 
         location /static/  {
@@ -257,15 +265,34 @@ Create the following file at ``/etc/supervisor/conf.d/shibboleth-fastcgi.conf``:
     stdout_logfile=/var/log/supervisor/shibresponder.log
     stderr_logfile=/var/log/supervisor/shibresponder.error.log
 
+The socket locations (``/run/shibboleth/shibauthorizer.sock`` and
+``/run/shibboleth/shibresponder.sock``) are arbitrary; use whatever locations
+you want.
+
 The restart Supervisor with this command: ``sudo systemctl restart supervisor.service``.
 If it doesn't work, try running ``sudo unlink /var/run/supervisor.sock`` first.
 Verify that it's working by checking to see if the
 ``/run/shibboleth/shibauthorizer.sock`` and ``/run/shibboleth/shibresponder.sock``
 sockets exist.
 
-Next, we need to connect nginx to Shibboleth via these sockets. Add the following
-sections to your ``/etc/nginx/conf.d/django.conf`` file, *inside* of the server
-block:
+Next, we need to connect nginx to Shibboleth via these sockets. First, create
+the file ``/etc/nginx/shib_mit_params`` with the following contents:
+
+.. code-block:: nginx
+
+    shib_request_set $shib_remote_user $upstream_http_variable_remote_user;
+    uwsgi_param REMOTE_USER $shib_remote_user;
+    shib_request_set $shib_eppn $upstream_http_variable_eppn;
+    uwsgi_param EPPN $shib_eppn;
+    shib_request_set $shib_mail $upstream_http_variable_mail;
+    uwsgi_param MAIL $shib_mail;
+    shib_request_set $shib_displayname $upstream_http_variable_displayname;
+    uwsgi_param DISPLAY_NAME $shib_displayname;
+
+This instructs nginx to grab headers from the Shibboleth authorizer response
+and send them to Django, so that Django knows who the user is. Then add
+the following sections to your ``/etc/nginx/conf.d/django.conf`` file,
+*inside* of the server block:
 
 .. code-block:: nginx
 
@@ -291,18 +318,11 @@ block:
     # FastCGI authorizer.  Watch out for performance issues and spoofing.
     location /secure {
         include shib_clear_headers;
-        # Add your attributes here. They get introduced as headers
-        # by the FastCGI authorizer so we must prevent spoofing.
-        more_clear_input_headers 'displayName' 'mail' 'persistent-id';
         shib_request /shibauthorizer;
         shib_request_use_headers on;
-
+        include shib_mit_params;
         uwsgi_pass django;
         include /etc/nginx/uwsgi_params;
-        uwsgi_param Host $host;
-        uwsgi_param X-Real-IP $remote_addr;
-        uwsgi_param X-Forwarded-For $proxy_add_x_forwarded_for;
-        uwsgi_param X-Forwarded-Proto $http_x_forwarded_proto;
     }
 
 Reload nginx again, and verify that you can visit
@@ -313,10 +333,45 @@ Next, you'll need to send an email to ``touchstone-support@mit.edu`` to get your
 client registered in MIT's Touchstone identity provider (IdP). Include the
 contents of ``/etc/shibboleth/sp-cert.pem`` in your email.
 
-Configure Shibboleth-authenticated routes
------------------------------------------
+Configure routes in Shibboleth
+------------------------------
+We've now configured nginx to know which routes are secured by Shibboleth,
+but Shibboleth needs to know that information, too. We're gonna edit some
+XML files by hand!
 
-We need to enable authention using the ``REMOTE_USER`` enviornment variable
+Open the ``/etc/shibboleth/shibboleth2.xml`` file that was generated by MIT's
+``gen-shib2.sh`` script. The top-level element should be ``<SPConfig>``, with
+an ``<ApplicationDefaults>`` element nested underneath it. Create a new
+``<RequestMapper>`` element that is a child of ``<SPConfig>`` and a sibling
+of ``<ApplicationDefaults>``. The element should look like this:
+
+.. code-block:: xml
+
+    <RequestMapper type="Native">
+      <RequestMap>
+        <Host name="django-shibboleth-demo.odl.mit.edu">
+          <Path name="secure" authType="shibboleth" requireSession="true" />
+        </Host>
+      </RequestMap>
+    </RequestMapper>
+
+`This RequestMapper is documented on the Shibboleth wiki.
+<https://wiki.shibboleth.net/confluence/display/SHIB2/NativeSPRequestMapper>`_
+
+Installing Shibboleth from APT also set up the ``shibd`` daemon, which now
+needs to be restarted to pick up the new configuration. We'll also need to
+restart Supervisor, so that the ``shibauthorizer`` and ``shibresponder``
+processes pick up the new configuration, as well. After you've edited the ``shibboleth2.xml`` file, run these commands:
+
+.. code-block:: bash
+
+    sudo service shibd restart
+    sudo service supervisor restart
+
+Configure Django with Shibboleth headers
+----------------------------------------
+
+We need to enable authentication using the ``REMOTE_USER`` enviornment variable
 from nginx.
 Django's docs for how to do so are here:
 https://docs.djangoproject.com/en/1.10/howto/auth-remote-user/
@@ -334,15 +389,14 @@ Next, open the `settings.py` file, and add the following variables to it:
 .. code-block:: python
 
     SHIBBOLETH_ATTRIBUTE_MAP = {
-        "eppn": (True, "username"),
-        "email": (True, "email"),
-        # full name is in the "displayName" header,
+        "EPPN": (True, "username"),
+        "MAIL": (True, "email"),
+        # full name is in the "DISPLAY_NAME" header,
         # but no way to parse that into first_name and last_name...
     }
     AUTHENTICATION_BACKENDS = [
         'shibboleth.backends.ShibbolethRemoteUserBackend',
     ]
-    LOGIN_URL = "/Shibboleth.sso/Login"
 
 Also, add the ``ShibbolethRemoteUserMiddleware`` to the ``MIDDLEWARE_CLASSES`` list,
 *after* the Django's ``AuthenticationMiddleware``:
@@ -368,11 +422,19 @@ You might want to use the following template for testing purposes:
     {% endif %}
     <p><a href="/Shibboleth.sso/Session">Shibboleth session info</a></p>
 
-Current problem: Shibboleth is working, and uwsgi/Django is working. However,
-Shibboleth isn't passing authentication to uwsgi/Django, so Django doesn't
-know about authentication information. Need to configure nginx to proxy
-that information properly. (Or perhaps Shibboleth isn't working as well as
-I think?)
+In order to see your changes, you'll need to restart uWSGI:
+
+.. code-block: bash
+
+    # activate your virtualenv, then
+    uwsgi --reload=uwsgi.pid
+    uwsgi --module=testproject.wsgi:application --env DJANGO_SETTINGS_MODULE=testproject.settings --socket=127.0.0.1:29000 --daemonize=uwsgi.log --pidfile=uwsgi.pid
+
+Finished
+--------
+
+You now have a Django project running behind nginx that works with Shibboleth.
+Congratulations!
 
 .. _Django: https://www.djangoproject.com/
 .. _Touchstone: https://ist.mit.edu/touchstone
